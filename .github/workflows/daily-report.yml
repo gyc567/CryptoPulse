@@ -1,0 +1,74 @@
+name: Daily Crypto Report
+
+on:
+  schedule:
+    # 每天北京时间早上8点执行 (UTC 0:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Generate daily report
+      run: ./generate-daily-report.sh --no-git
+      env:
+        NEWSDATA_API_KEY: ${{ secrets.NEWSDATA_API_KEY }}
+
+    - name: Commit and push reports
+      run: |
+        # 配置Git
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+
+        # 添加生成的文件
+        git add en/2026/*.md zh/2026/*.md data/raw-data.json
+
+        # 检查是否有变更
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # 获取当前日期作为提交信息
+          TODAY=$(date +%Y-%m-%d)
+          git commit -m "Daily: $TODAY - auto-generated crypto report"
+          git push
+          echo "✅ Reports for $TODAY committed and pushed successfully"
+        fi
+
+    - name: Upload reports as artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: daily-reports
+        path: |
+          en/2026/*.md
+          zh/2026/*.md
+          data/raw-data.json
+        retention-days: 30
+
+    - name: Notify completion
+      if: success()
+      run: |
+        echo "✅ Daily crypto report generated successfully!"
+        echo "📊 Reports committed to repository"
+        echo "📁 Files available in en/2026/ and zh/2026/"
+
+    - name: Notify failure
+      if: failure()
+      run: |
+        echo "❌ Failed to generate daily report"
+        echo "Please check the workflow logs for details"

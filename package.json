@@ -1,0 +1,27 @@
+{
+  "name": "cryptopulse",
+  "version": "1.0.0",
+  "description": "Daily cryptocurrency news and market data report generator",
+  "main": "generate-daily-report.sh",
+  "scripts": {
+    "start": "./generate-daily-report.sh",
+    "fetch": "node scripts/fetch-data.js",
+    "generate": "node scripts/generate-report.js",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "cryptocurrency",
+    "news",
+    "report",
+    "daily",
+    "market-data"
+  ],
+  "author": "CryptoPulse Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
