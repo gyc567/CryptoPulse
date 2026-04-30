@@ -14,6 +14,121 @@ const EN_DIR = path.join(__dirname, '..', 'en', '2026');
 const ZH_DIR = path.join(__dirname, '..', 'zh', '2026');
 const DATA_FILE = path.join(DATA_DIR, 'raw-data.json');
 
+// Translation cache to avoid repeated API calls
+const translationCache = new Map();
+
+/**
+ * Translate text from English to Chinese using MyMemory API (free, no auth required)
+ */
+async function translateToChinese(text) {
+  if (!text || text.trim() === '') return text;
+
+  // Check cache first
+  const cacheKey = text.substring(0, 100);
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
+
+  // Skip translation for very short or numeric-only text
+  if (text.length < 3 || /^[0-9\s.,%$]+$/.test(text)) {
+    return text;
+  }
+
+  // For short texts, translate directly
+  if (text.length <= 500) {
+    try {
+      const response = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh-CN`,
+        { timeout: 10000 }
+      );
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.responseStatus === 200 && result.responseData?.translatedText) {
+          const translated = result.responseData.translatedText;
+          translationCache.set(cacheKey, translated);
+          return translated;
+        }
+      }
+    } catch (error) {
+      console.warn('Translation failed:', error.message);
+    }
+    return text;
+  }
+
+  // For longer texts, split into sentences and translate each
+  try {
+    const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+    const translatedSentences = [];
+
+    for (const sentence of sentences) {
+      if (sentence.trim().length < 3) {
+        translatedSentences.push(sentence);
+        continue;
+      }
+
+      // Translate each sentence
+      const response = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(sentence.trim())}&langpair=en|zh-CN`,
+        { timeout: 10000 }
+      );
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.responseStatus === 200 && result.responseData?.translatedText) {
+          translatedSentences.push(result.responseData.translatedText);
+        } else {
+          translatedSentences.push(sentence);
+        }
+      } else {
+        translatedSentences.push(sentence);
+      }
+
+      // Small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    const translated = translatedSentences.join(' ');
+    translationCache.set(cacheKey, translated);
+    return translated;
+  } catch (error) {
+    console.warn('Translation failed:', error.message);
+    return text;
+  }
+}
+
+/**
+ * Translate all news articles to Chinese
+ */
+async function translateNews(news) {
+  const translatedNews = [];
+
+  for (const article of news) {
+    const translated = {
+      ...article,
+      title: await translateToChinese(article.title),
+      description: await translateToChinese(stripHtml(article.description))
+    };
+    translatedNews.push(translated);
+
+    // Small delay to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  return translatedNews;
+}
+
+/**
+ * Strip HTML tags from text
+ */
+function stripHtml(html) {
+  return html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .substring(0, 1000); // Limit length to save tokens
+}
+
 // Ensure directories exist
 [EN_DIR, ZH_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) {
@@ -58,12 +173,48 @@ function formatLargeNumber(num) {
 function generateEnglishReport(data, date) {
   const cryptos = data.cryptocurrencies || [];
   const news = data.news || [];
+  const sentiment = data.sentiment || {};
+  const fearGreed = data.fearGreed;
 
   let report = `# CryptoPulse Daily Report\n`;
   report += `## ${date}\n\n`;
 
   report += `**Report generated:** ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })} UTC\n`;
   report += `**Data sources:** ${data.sources?.join(', ') || 'Multiple'}\n\n`;
+
+  // Daily Summary Section
+  report += `## Daily Summary\n\n`;
+
+  // Fear & Greed Index
+  if (fearGreed) {
+    const emoji = fearGreed.value <= 20 ? '😱' : fearGreed.value <= 40 ? '😰' : fearGreed.value <= 60 ? '😐' : fearGreed.value <= 80 ? '😊' : '🤑';
+    report += `**Fear & Greed Index:** ${emoji} ${fearGreed.value}/100 (${fearGreed.classification})\n\n`;
+  }
+
+  // Market Sentiment
+  if (sentiment.trend) {
+    const trendEmoji = {
+      bullish: '📈',
+      bearish: '📉',
+      slightly_bullish: '📊',
+      slightly_bearish: '📊',
+      sideways: '➡️'
+    };
+    report += `**Market Trend:** ${trendEmoji[sentiment.trend] || '➡️'} ${sentiment.trend.replace('_', ' ').toUpperCase()}\n`;
+  }
+
+  if (sentiment.outlook) {
+    report += `**Outlook:** ${sentiment.outlook}\n`;
+  }
+
+  if (sentiment.keyFactors && sentiment.keyFactors.length > 0) {
+    report += `\n**Key Factors:**\n`;
+    sentiment.keyFactors.forEach(factor => {
+      report += `- ${factor}\n`;
+    });
+  }
+
+  report += `\n---\n\n`;
 
   // Market Overview Section
   report += `## Market Overview\n\n`;
@@ -126,15 +277,72 @@ function generateEnglishReport(data, date) {
 /**
  * Generate Chinese report
  */
-function generateChineseReport(data, date) {
+async function generateChineseReport(data, date) {
   const cryptos = data.cryptocurrencies || [];
-  const news = data.news || [];
+  let news = data.news || [];
+  const sentiment = data.sentiment || {};
+  const fearGreed = data.fearGreed;
+
+  // Translate news to Chinese
+  if (news.length > 0) {
+    console.log('Translating news to Chinese...');
+    news = await translateNews(news);
+  }
 
   let report = `# CryptoPulse 每日报告\n`;
   report += `## ${date}\n\n`;
 
   report += `**报告生成时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'UTC' })} UTC\n`;
   report += `**数据来源：** ${data.sources?.join('、') || '多个'}\n\n`;
+
+  // Daily Summary Section
+  report += `## 每日市场总结\n\n`;
+
+  // Fear & Greed Index
+  if (fearGreed) {
+    const emoji = fearGreed.value <= 20 ? '😱' : fearGreed.value <= 40 ? '😰' : fearGreed.value <= 60 ? '😐' : fearGreed.value <= 80 ? '😊' : '🤑';
+    const classificationCN = {
+      'Extreme Fear': '极度恐慌',
+      'Fear': '恐慌',
+      'Neutral': '中性',
+      'Greed': '贪婪',
+      'Extreme Greed': '极度贪婪'
+    };
+    report += `**市场恐慌指数：** ${emoji} ${fearGreed.value}/100 (${classificationCN[fearGreed.classification] || fearGreed.classification})\n\n`;
+  }
+
+  // Market Sentiment
+  const trendMapCN = {
+    bullish: '上涨趋势',
+    bearish: '下跌趋势',
+    slightly_bullish: '小幅上涨',
+    slightly_bearish: '小幅下跌',
+    sideways: '横盘整理'
+  };
+
+  if (sentiment.trend) {
+    const trendEmoji = {
+      bullish: '📈',
+      bearish: '📉',
+      slightly_bullish: '📊',
+      slightly_bearish: '📊',
+      sideways: '➡️'
+    };
+    report += `**市场趋势：** ${trendEmoji[sentiment.trend] || '➡️'} ${trendMapCN[sentiment.trend] || sentiment.trend}\n`;
+  }
+
+  if (sentiment.outlook) {
+    report += `**市场展望：** ${sentiment.outlook}\n`;
+  }
+
+  if (sentiment.keyFactors && sentiment.keyFactors.length > 0) {
+    report += `\n**关键因素：**\n`;
+    sentiment.keyFactors.forEach(factor => {
+      report += `- ${factor}\n`;
+    });
+  }
+
+  report += `\n---\n\n`;
 
   // Market Overview Section
   report += `## 市场概览\n\n`;
@@ -228,7 +436,7 @@ async function main() {
     const englishReport = generateEnglishReport(data, dateDisplay);
 
     console.log('Generating Chinese report...');
-    const chineseReport = generateChineseReport(data, dateDisplay);
+    const chineseReport = await generateChineseReport(data, dateDisplay);
 
     // Save reports
     const enFile = path.join(EN_DIR, `${dateStr}.md`);
