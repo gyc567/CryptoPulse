@@ -98,3 +98,4 @@ zh/2026/*.md
 # But keep the directory structure
 !en/2026/
 !zh/2026/
+.gstack/
