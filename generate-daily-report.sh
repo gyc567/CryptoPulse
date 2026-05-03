@@ -1,6 +1,7 @@
 #!/bin/bash
 
-set -e
+set -euo pipefail
+IFS=$'\n\t'
 
 echo "=== BuilderPulse Daily Report Generator ==="
 echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -32,10 +33,10 @@ if ! node scripts/generate-report.js; then
   exit 1
 fi
 
-# Verify reports were created
-TODAY=$(date +%Y-%m-%d)
+# Verify reports were created - use local date instead of UTC timestamp
+TODAY=$(date '+%Y-%m-%d')
 if [ ! -f "en/2026/${TODAY}.md" ] || [ ! -f "zh/2026/${TODAY}.md" ]; then
-  echo "ERROR: Report files not generated."
+  echo "ERROR: Report files not generated for ${TODAY}."
   exit 1
 fi
 
