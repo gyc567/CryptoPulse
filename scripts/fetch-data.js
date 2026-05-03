@@ -7,6 +7,15 @@ const fs = require('fs');
 const path = require('path');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
+// Node.js fetch polyfill for compatibility with Node < 18
+// Node 18+ has native fetch, but Node 16 does not
+if (typeof fetch === 'undefined') {
+  global.fetch = async (url, options) => {
+    const nodeFetch = require('node-fetch');
+    return nodeFetch(url, options);
+  };
+}
+
 // Configuration
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const OUTPUT_FILE = path.join(DATA_DIR, 'raw-data.json');
@@ -22,30 +31,46 @@ if (proxyUrl) {
   fetchOptions = { agent: new HttpsProxyAgent(proxyUrl) };
 }
 
+function validateResponse(data, requiredFields) {
+  if (!data || typeof data !== 'object') return false;
+  for (const field of requiredFields) {
+    if (!(field in data)) return false;
+  }
+  return true;
+}
+
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-/**
- * Custom fetch with proxy support and retries
- */
+function formatCurrency(num) {
+  if (num === null || num === undefined) return 'N/A';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(num);
+}
+
 async function fetchWithRetry(url, options = {}, retries = 3) {
-  const fetchFn = (opts) => {
-    const mergedOptions = { ...fetchOptions, ...opts };
-    return fetch(url, mergedOptions);
-  };
+  const mergedOptions = { ...fetchOptions, ...options };
 
   for (let i = 0; i < retries; i++) {
     try {
-      const response = await fetchFn(options);
-      if (response.ok) return response;
-      throw new Error(`HTTP ${response.status}`);
+      const response = await fetch(url, mergedOptions);
+      if (!response.ok && i < retries - 1) {
+        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        continue;
+      }
+      return response;
     } catch (error) {
       if (i === retries - 1) throw error;
       await new Promise(r => setTimeout(r, 1000 * (i + 1)));
     }
   }
+  throw new Error('Max retries reached');
 }
 
 /**
@@ -108,6 +133,10 @@ async function fetchCoinGeckoData() {
 
     const data = await response.json();
 
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('CoinGecko returned invalid data');
+    }
+
     return data.map(coin => ({
       id: coin.id,
       symbol: coin.symbol.toUpperCase(),
@@ -125,30 +154,148 @@ async function fetchCoinGeckoData() {
 }
 
 /**
- * Fetch Bitcoin data from Blockchain.info (FREE, no auth)
+ * Fetch Bitcoin data from CryptoCompare (FREE, no auth) - PRIMARY
+ * Includes 24h high/low/volume
  */
 async function fetchBitcoinData() {
   try {
-    console.log('Fetching Bitcoin data...');
+    console.log('Fetching Bitcoin data from CryptoCompare...');
 
-    const response = await fetchWithRetry('https://blockchain.info/ticker', { timeout: 10000 });
+    const response = await fetchWithRetry(
+      'https://min-api.cryptocompare.com/data/pricemultifull?fsyms=BTC&tsyms=USD',
+      { timeout: 10000 }
+    );
+
     if (!response.ok) {
-      throw new Error(`Blockchain.info API error: ${response.status}`);
+      throw new Error(`CryptoCompare BTC error: ${response.status}`);
     }
 
-    const data = await response.json();
-    const usdData = data.USD;
+    const result = await response.json();
+    const btcData = result?.RAW?.BTC?.USD;
+
+    if (!btcData) {
+      throw new Error('No BTC data returned');
+    }
 
     return {
       symbol: 'BTC',
       name: 'Bitcoin',
-      price: usdData.last,
-      volume24h: usdData.volume,
-      high24h: usdData.high,
-      low24h: usdData.low
+      price: btcData.PRICE || 0,
+      volume24h: btcData.VOLUME24HOUR || 0,
+      high24h: btcData.HIGH24HOUR || 0,
+      low24h: btcData.LOW24HOUR || 0,
+      marketCap: btcData.MKTCAP || 0,
+      change24h: btcData.CHANGEPCT24HOUR || 0
     };
   } catch (error) {
     console.warn('Bitcoin data fetch failed:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch Bitcoin price from 24h ago for comparison
+ */
+async function fetchBTCPriceYesterday() {
+  try {
+    const response = await fetchWithRetry(
+      'https://min-api.cryptocompare.com/data/v2/histoday?fsym=BTC&tsym=USD&limit=1',
+      { timeout: 10000 }
+    );
+    if (!response.ok) return null;
+    const result = await response.json();
+    const days = result?.Data?.Data;
+    if (!days || days.length === 0) return null;
+    return days[0].close;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch global market data (market cap, dominance)
+ */
+async function fetchDeFiTVL() {
+  try {
+    const resp = await fetchWithRetry('https://api.llama.fi/protocols', { timeout: 15000 });
+    if (!resp || !resp.ok) return null;
+    const protocols = await resp.json();
+    if (!Array.isArray(protocols)) return null;
+
+    // Calculate TVL from chainTvls for each protocol
+    const processProtocol = (p) => {
+      const chainTvls = p.chainTvls || {};
+      const tvlValues = Object.values(chainTvls);
+      const totalTvl = tvlValues.reduce((sum, v) => sum + (typeof v === 'number' ? v : 0), 0);
+      return {
+        name: p.name || p.displayName || 'Unknown',
+        tvl: totalTvl,
+        change24h: p.change_1d || 0
+      };
+    };
+
+    // Get top 5 by TVL
+    const withTvl = protocols.map(processProtocol)
+      .filter(p => p.tvl > 0)
+      .sort((a, b) => b.tvl - a.tvl);
+    const topProtocols = withTvl.slice(0, 5);
+
+    // Calculate total DeFi TVL from top protocols
+    const totalTvl = topProtocols.reduce((sum, p) => sum + p.tvl, 0);
+    const change24h = topProtocols.length > 0
+      ? topProtocols.reduce((s, p) => s + (p.change24h || 0), 0) / topProtocols.length
+      : 0;
+
+    return { totalTvl, change24h, topProtocols };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Fetch global market data from CoinLore (FREE, no auth)
+ * Returns: { btcDominance, ethDominance, totalMarketCap, totalVolume, marketCapChange24h }
+ */
+async function fetchGlobalMarketData() {
+  try {
+    console.log('Fetching global market data from CoinLore...');
+    const resp = await fetchWithRetry('https://api.coinlore.com/api/global/', { timeout: 10000 });
+    if (!resp || !resp.ok) return null;
+    const data = await resp.json();
+    if (!data || !Array.isArray(data) || data.length === 0) return null;
+    const d = data[0];
+    return {
+      btcDominance: parseFloat(d.btc_d) || 0,
+      ethDominance: parseFloat(d.eth_d) || 0,
+      totalMarketCap: parseFloat(d.total_mcap) || 0,
+      totalVolume: parseFloat(d.total_volume) || 0,
+      marketCapChange24h: parseFloat(d.mcap_change) || 0
+    };
+  } catch (err) {
+    console.warn('Global market data fetch failed:', err.message);
+    return null;
+  }
+}
+
+async function fetchBitcoinOnchain() {
+  try {
+    const resp = await fetchWithRetry('https://api.blockchair.com/bitcoin/stats', { timeout: 10000 });
+    if (!resp || !resp.ok) return null;
+    const j = await resp.json();
+    const d = j?.data ?? {};
+    const transactionCount = d?.transactions_24h ?? d?.transactions ?? null;
+    let hashRate = d?.hashrate_24h ?? d?.hashrate ?? null;
+    if (typeof hashRate === 'string') hashRate = parseFloat(hashRate);
+    if (typeof hashRate === 'number') hashRate = hashRate / 1e18;
+    const difficulty = d?.difficulty ?? null;
+
+    return {
+      activeAddresses: null,
+      transactionCount: Number(transactionCount ?? 0),
+      hashRate: typeof hashRate === 'number' ? hashRate : null,
+      difficulty: typeof difficulty === 'number' ? difficulty : null
+    };
+  } catch (err) {
     return null;
   }
 }
@@ -275,72 +422,188 @@ async function fetchFearGreedIndex() {
   }
 }
 
+async function fetchJintelData() {
+  try {
+    console.log('Fetching data from Jintel AI...');
+
+    const JINTEL_API = 'https://api.jintel.ai/tools/quotes';
+    const JINTEL_TOKEN = process.env.JINTEL_API_KEY || '9b83992a1f960537f5d14d38cda89c51781f534b35e0ad35aa38b69646d218e6';
+
+    const tickers = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'DOGE', 'AVAX', 'DOT', 'LINK'];
+
+    const response = await fetchWithRetry(JINTEL_API, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${JINTEL_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ tickers }),
+      timeout: 15000
+    });
+
+    if (!response.ok) {
+      throw new Error(`Jintel API error: ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    if (!result.data?.quotes || !Array.isArray(result.data.quotes)) {
+      throw new Error('Jintel returned invalid data structure');
+    }
+
+    return result.data.quotes.map(q => ({
+      symbol: q.ticker,
+      price: q.price,
+      change24h: q.changePercent,
+      volume24h: q.volume,
+      marketCap: q.marketCap
+    }));
+  } catch (error) {
+    console.warn('Jintel fetch failed:', error.message);
+    return null;
+  }
+}
+
 /**
- * Generate market sentiment based on data
+ * Generate market sentiment using multi-factor analysis.
+ * BTC direction is primary (50%) since it dominates market cap.
+ * Market breadth is secondary (30%) for real market confirmation.
+ * Fear & Greed provides context (20%) for signal strength.
  */
-function analyzeMarketSentiment(cryptos, bitcoin) {
+function analyzeMarketSentiment(cryptos, bitcoin, fearGreed) {
   const sentiment = {
-    overall: 'Neutral',
-    fearGreed: null,
+    btcScore: 0,
+    breadthScore: 0,
+    fearScore: 0,
+    compositeScore: 0,
     trend: 'sideways',
     outlook: '',
-    keyFactors: []
+    outlookEn: '',
+    keyFactors: [],
+    btcVsYesterday: null,
+    marketBreadth: 0
   };
 
-  // Calculate market metrics
-  let totalChange = 0;
+  // 1. BTC Direction Score (50% weight) — most important signal
+  const btc = cryptos.find(c => c.symbol === 'BTC');
+  if (bitcoin && bitcoin.priceYesterday) {
+    const btcChange = ((bitcoin.price - bitcoin.priceYesterday) / bitcoin.priceYesterday) * 100;
+    sentiment.btcVsYesterday = btcChange;
+    if (btcChange > 0.5) {
+      sentiment.btcScore = 1;
+    } else if (btcChange < -0.5) {
+      sentiment.btcScore = -1;
+    }
+    // Flat: score = 0
+  }
+
+  // 2. Market Breadth Score (30% weight)
   let gainers = 0;
   let losers = 0;
-  let totalVolume = 0;
-
   cryptos.forEach(coin => {
-    if (coin.priceChange24h > 0) {
-      gainers++;
-      totalChange += coin.priceChange24h;
-    } else if (coin.priceChange24h < 0) {
-      losers++;
-      totalChange += coin.priceChange24h;
-    }
-    totalVolume += coin.volume24h || 0;
+    if (coin.symbol === 'BTC') return; // BTC counted separately
+    if (coin.priceChange24h > 0) gainers++;
+    else if (coin.priceChange24h < 0) losers++;
   });
+  const nonBtcCount = cryptos.length - 1;
+  sentiment.marketBreadth = nonBtcCount > 0 ? (gainers - losers) / nonBtcCount : 0;
+  // marketBreadth: +1 = all gainers, -1 = all losers
+  sentiment.breadthScore = sentiment.marketBreadth;
 
-  const avgChange = cryptos.length > 0 ? totalChange / cryptos.length : 0;
-  const marketDominance = cryptos.find(c => c.symbol === 'BTC')?.marketCap || 0;
-
-  // Determine trend
-  if (avgChange > 2) {
-    sentiment.trend = 'bullish';
-  } else if (avgChange < -2) {
-    sentiment.trend = 'bearish';
-  } else if (avgChange > 0) {
-    sentiment.trend = 'slightly_bullish';
-  } else if (avgChange < 0) {
-    sentiment.trend = 'slightly_bearish';
+  // 3. Fear & Greed Score (20% weight)
+  if (fearGreed && fearGreed.value != null) {
+    const fg = fearGreed.value;
+    if (fg < 25) {
+      sentiment.fearScore = -1;    // Extreme Fear → bearish amplifier
+    } else if (fg < 45) {
+      sentiment.fearScore = -0.5; // Fear → slight bearish
+    } else if (fg > 75) {
+      sentiment.fearScore = 1;    // Extreme Greed → bullish amplifier
+    } else if (fg > 55) {
+      sentiment.fearScore = 0.5;   // Greed → slight bullish
+    }
+    // Neutral (45-55): score = 0
   }
 
-  // Generate outlook
-  const trendText = {
-    bullish: '上涨趋势',
-    bearish: '下跌趋势',
-    slightly_bullish: '小幅上涨',
-    slightly_bearish: '小幅下跌',
-    sideways: '横盘整理'
+  // Composite score: weighted average
+  sentiment.compositeScore =
+    sentiment.btcScore * 0.5 +
+    sentiment.breadthScore * 0.3 +
+    sentiment.fearScore * 0.2;
+
+  // Map composite score to trend
+  if (sentiment.compositeScore >= 0.6) {
+    sentiment.trend = 'bullish';
+  } else if (sentiment.compositeScore >= 0.2) {
+    sentiment.trend = 'cautiously_bullish';
+  } else if (sentiment.compositeScore <= -0.6) {
+    sentiment.trend = 'bearish';
+  } else if (sentiment.compositeScore <= -0.2) {
+    sentiment.trend = 'cautiously_bearish';
+  } else {
+    sentiment.trend = 'sideways';
+  }
+
+  const T = {
+    trend: {
+      bullish: { zh: '上涨趋势', en: 'Uptrend' },
+      cautiously_bullish: { zh: '谨慎看涨', en: 'Cautiously bullish' },
+      sideways: { zh: '横盘整理', en: 'Sideways' },
+      cautiously_bearish: { zh: '谨慎看跌', en: 'Cautiously bearish' },
+      bearish: { zh: '下跌趋势', en: 'Downtrend' }
+    },
+    btcDir: (score) => ({
+      zh: score > 0 ? 'BTC 上涨' : score < 0 ? 'BTC 下调' : 'BTC 持稳',
+      en: score > 0 ? 'BTC up' : score < 0 ? 'BTC down' : 'BTC flat'
+    }),
+    breadthDir: (breadth) => ({
+      zh: breadth > 0.3 ? '市场广度健康' : breadth < -0.3 ? '市场广度偏弱' : '市场分化',
+      en: breadth > 0.3 ? 'broad strength' : breadth < -0.3 ? 'broad weakness' : 'mixed breadth'
+    })
   };
 
-  sentiment.outlook = `${trendText[sentiment.trend]}，市场${losers > gainers ? '整体回调' : '表现稳健'}`;
+  const btcDirT = T.btcDir(sentiment.btcScore);
+  const breadthDirT = T.breadthDir(sentiment.marketBreadth);
+  sentiment.outlook = `${T.trend[sentiment.trend].zh}，${btcDirT.zh}，${breadthDirT.zh}`;
+  sentiment.outlookEn = `${T.trend[sentiment.trend].en} — ${btcDirT.en}, ${breadthDirT.en}`;
 
-  // Key factors
-  if (avgChange < -3) {
-    sentiment.keyFactors.push('市场大幅回调，投资者需注意风险');
+  sentiment.keyFactors = [];
+  sentiment.keyFactorsZh = [];
+
+  if (sentiment.btcScore < 0) {
+    const pct = Math.abs(sentiment.btcVsYesterday).toFixed(2);
+    const note = sentiment.btcVsYesterday > -1 ? 'minor pullback, normal volatility' : 'meaningful correction, monitor closely';
+    const noteZh = sentiment.btcVsYesterday > -1 ? '小幅回调，属正常波动' : '回调幅度较大，需关注';
+    sentiment.keyFactors.push(`BTC ${pct}% vs yesterday — ${note}`);
+    sentiment.keyFactorsZh.push(`BTC 相对昨日${pct}%，${noteZh}`);
   }
-  if (losers > gainers * 2) {
-    sentiment.keyFactors.push('多数币种下跌，市场情绪偏空');
+  if (sentiment.btcScore > 0) {
+    const pct = sentiment.btcVsYesterday.toFixed(2);
+    sentiment.keyFactors.push(`BTC +${pct}% vs yesterday — upward momentum`);
+    sentiment.keyFactorsZh.push(`BTC 相对昨日上涨${pct}%，动能正向`);
   }
-  if (avgChange > 2) {
-    sentiment.keyFactors.push('市场普遍上涨，情绪转为乐观');
+  if (sentiment.marketBreadth > 0.4) {
+    sentiment.keyFactors.push('Market breadth healthy: majority of coins in green');
+    sentiment.keyFactorsZh.push('市场广度健康：多数币种上涨');
+  } else if (sentiment.marketBreadth < -0.4) {
+    sentiment.keyFactors.push('Market breadth weak: majority of coins in red');
+    sentiment.keyFactorsZh.push('市场广度偏弱：多数币种下跌');
   }
-  if (bitcoin && bitcoin.price) {
-    sentiment.keyFactors.push(`比特币价格${bitcoin.price > 70000 ? '维持高位' : '有所回落'}`);
+  if (fearGreed && fearGreed.value) {
+    const fg = fearGreed.value;
+    if (fg < 30) {
+      sentiment.keyFactors.push(`Fear & Greed at ${fg}/100 — markets may be overly pessimistic, rebound potential`);
+      sentiment.keyFactorsZh.push(`恐惧情绪指数 ${fg}/100，市场可能过度悲观，存在反弹机会`);
+    } else if (fg > 70) {
+      sentiment.keyFactors.push(`Fear & Greed at ${fg}/100 — markets may be overly optimistic, caution on chasing`);
+      sentiment.keyFactorsZh.push(`贪婪情绪指数 ${fg}/100，市场可能过度乐观，注意追高风险`);
+    }
+  }
+  if (bitcoin && bitcoin.price > 0) {
+    const priceLevel = bitcoin.price > 75000 ? 'near yearly highs' : bitcoin.price > 60000 ? 'mid-range annually' : 'near yearly lows';
+    const priceLevelZh = bitcoin.price > 75000 ? '处于年内高位' : bitcoin.price > 60000 ? '处于年内中等水平' : '处于年内低位';
+    sentiment.keyFactors.push(`BTC price ${formatCurrency(bitcoin.price)} — ${priceLevel}`);
+    sentiment.keyFactorsZh.push(`BTC 价格 ${formatCurrency(bitcoin.price)}，${priceLevelZh}`);
   }
 
   return sentiment;
@@ -358,10 +621,11 @@ async function main() {
   let marketData = [];
   let bitcoinData = null;
   let fearGreedData = null;
+  let jintelData = null;
   let dataSource = 'No market data available';
 
-  try {
-    // Try CryptoCompare first (most reliable free API)
+    try {
+      // Try CryptoCompare first (most reliable free API)
     let data = await fetchCryptoCompareData();
     if (data.length > 0) {
       marketData = data;
@@ -380,19 +644,38 @@ async function main() {
     // Fetch Bitcoin data
     bitcoinData = await fetchBitcoinData();
 
+    // Attach yesterday's price for comparison
+    if (bitcoinData) {
+      bitcoinData.priceYesterday = await fetchBTCPriceYesterday();
+    }
+
     // Fetch Fear & Greed Index
     fearGreedData = await fetchFearGreedIndex();
 
+    jintelData = await fetchJintelData();
+
     // Analyze sentiment
-    const sentiment = analyzeMarketSentiment(marketData, bitcoinData);
-    if (fearGreedData) {
-      sentiment.fearGreed = fearGreedData;
-    }
+    const sentiment = analyzeMarketSentiment(marketData, bitcoinData, fearGreedData);
 
     // Fetch news
     const news = await fetchCryptoNews();
 
+    // Fetch additional external metrics
+    const defiTvl = await fetchDeFiTVL();
+    const btcOnchain = await fetchBitcoinOnchain();
+    const globalMarket = await fetchGlobalMarketData();
+
     // Combine all data
+    // Build sources list including new DeFi/On-chain sources when available
+    const sourcesList = [
+      dataSource,
+      globalMarket ? 'CoinLore global market (free)' : null,
+      btcOnchain ? 'Blockchair BTC on-chain (free)' : null,
+      fearGreedData ? 'Alternative.me (free)' : null,
+      jintelData ? 'Jintel AI (free tier)' : null,
+      'RSS feeds (free)'
+    ].filter(Boolean);
+
     const allData = {
       timestamp: new Date().toISOString(),
       cryptocurrencies: marketData,
@@ -400,12 +683,11 @@ async function main() {
       fearGreed: fearGreedData,
       sentiment: sentiment,
       news: news,
-      sources: [
-        dataSource,
-        bitcoinData ? 'Blockchain.info (free)' : 'No Bitcoin data',
-        fearGreedData ? 'Alternative.me (free)' : 'No Fear & Greed data',
-        'RSS feeds (free)'
-      ]
+      defiTvl,
+      bitcoinOnchain: btcOnchain,
+      globalMarket,
+      jintel: jintelData,
+      sources: sourcesList
     };
 
     // Save to file
@@ -416,6 +698,7 @@ async function main() {
     console.log(`✓ Saved to: ${OUTPUT_FILE}`);
     console.log(`✓ Cryptocurrencies: ${allData.cryptocurrencies.length}`);
     console.log(`✓ Fear & Greed: ${fearGreedData ? fearGreedData.value + ' (' + fearGreedData.classification + ')' : 'N/A'}`);
+    console.log(`✓ Jintel quotes: ${jintelData ? jintelData.length : 0}`);
     console.log(`✓ News articles: ${allData.news.length}`);
 
     return true;
@@ -430,6 +713,10 @@ async function main() {
       fearGreed: null,
       sentiment: null,
       news: [],
+      defiTvl: null,
+      bitcoinOnchain: null,
+      globalMarket: null,
+      jintel: null,
       sources: [],
       error: error.message
     };

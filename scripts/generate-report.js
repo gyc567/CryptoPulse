@@ -122,11 +122,173 @@ async function translateNews(news) {
  * Strip HTML tags from text
  */
 function stripHtml(html) {
+  if (!html) return '';
   return html
     .replace(/<[^>]*>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .substring(0, 1000); // Limit length to save tokens
+    .substring(0, 1000);
+}
+
+/**
+ * Format large numbers with abbreviations
+ */
+function formatCompact(num) {
+  if (num === null || num === undefined || num === 0) return 'N/A';
+  if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
+  if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+  if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+  if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
+  return num.toString();
+}
+
+/**
+ * Format difficulty for readability
+ */
+function formatDifficulty(d) {
+  if (d === null || d === undefined) return 'N/A';
+  if (d >= 1e12) return (d / 1e12).toFixed(2) + ' T';
+  if (d >= 1e9) return (d / 1e9).toFixed(2) + ' G';
+  return d.toLocaleString();
+}
+
+/**
+ * Generate AI summary for market analysis
+ */
+function generateAISummary(data) {
+  const cryptos = data.cryptocurrencies || [];
+  const sentiment = data.sentiment || {};
+  const globalMarket = data.globalMarket || {};
+  const defiTvl = data.defiTvl || {};
+  const btcOnchain = data.bitcoinOnchain || {};
+
+  const btc = cryptos.find(c => c.symbol === 'BTC');
+  const eth = cryptos.find(c => c.symbol === 'ETH');
+  const topGainers = [...cryptos].sort((a, b) => b.priceChange24h - a.priceChange24h).slice(0, 3);
+  const topLosers = [...cryptos].sort((a, b) => a.priceChange24h - b.priceChange24h).slice(0, 3);
+
+  const btcDominance = globalMarket.btcDominance || 0;
+  const totalMcap = globalMarket.totalMarketCap || 0;
+
+  const btcPrice = btc?.price || 0;
+  const btcChange = btc?.priceChange24h || 0;
+  const ethPrice = eth?.price || 0;
+  const ethChange = eth?.priceChange24h || 0;
+
+  let summary = '';
+
+  // Overall assessment
+  if (sentiment.trend === 'bullish' && btcChange > 1) {
+    summary += '🚀 比特币强势领涨，市场做多情绪浓厚。';
+  } else if (sentiment.trend === 'bearish' && btcChange < -1) {
+    summary += '⚠️ 市场回调风险上升，建议关注关键支撑位。';
+  } else if (Math.abs(btcChange) < 0.5) {
+    summary += '📊 市场进入盘整阶段，方向选择临近。';
+  } else {
+    summary += '📈 市场温和反弹，观望情绪占主导。';
+  }
+
+  // BTC performance
+  if (btcPrice > 75000) {
+    summary += `\n• 比特币站稳 ${(btcPrice / 1000).toFixed(1)}k 关口，${btcChange > 0 ? '强势' : '承压'} 状态；`;
+  } else {
+    summary += `\n• 比特币回调至 ${(btcPrice / 1000).toFixed(1)}k，需警惕进一步下行风险；`;
+  }
+
+  // ETH联动
+  if (ethPrice > 0 && btcPrice > 0) {
+    const ratio = ethPrice / btcPrice * 10000;
+    summary += `\n• ETH/BTC 比率 ${ratio.toFixed(2)}，${ratio > 30 ? 'ETH 相对强势' : 'BTC 主导市场'}；`;
+  }
+
+  // DeFi
+  if (defiTvl.totalTvl > 0) {
+    const tvlB = defiTvl.totalTvl / 1e9;
+    summary += `\n• DeFi 锁仓量 ${tvlB.toFixed(0)}B，${defiTvl.change24h > 0 ? '连续流入' : '小幅流出'}；`;
+  }
+
+  // 热点币种
+  if (topGainers.length > 0 && topGainers[0].priceChange24h > 5) {
+    summary += `\n• 今日明星：${topGainers[0].symbol} +${topGainers[0].priceChange24h.toFixed(1)}%；`;
+  }
+
+  // BTC Dominance
+  if (btcDominance > 60) {
+    summary += `\n• BTC 主导地位强化（${btcDominance.toFixed(1)}%），资金集中头部；`;
+  } else if (btcDominance < 50) {
+    summary += `\n• 市场轮动明显，ALT 季节进行中；`;
+  }
+
+  // On-chain signal
+  if (btcOnchain.hashRate > 0) {
+    summary += `\n• 算力 ${btcOnchain.hashRate.toFixed(0)} EH/s，矿工信心充足；`;
+  }
+
+  return summary;
+}
+
+/**
+ * Generate AI summary for English report
+ */
+function generateAISummaryEnglish(data) {
+  const cryptos = data.cryptocurrencies || [];
+  const sentiment = data.sentiment || {};
+  const globalMarket = data.globalMarket || {};
+  const defiTvl = data.defiTvl || {};
+  const btcOnchain = data.bitcoinOnchain || {};
+
+  const btc = cryptos.find(c => c.symbol === 'BTC');
+  const eth = cryptos.find(c => c.symbol === 'ETH');
+  const topGainers = [...cryptos].sort((a, b) => b.priceChange24h - a.priceChange24h).slice(0, 3);
+
+  const btcDominance = globalMarket.btcDominance || 0;
+
+  const btcPrice = btc?.price || 0;
+  const btcChange = btc?.priceChange24h || 0;
+  const ethPrice = eth?.price || 0;
+  const ethChange = eth?.priceChange24h || 0;
+
+  let summary = '';
+
+  if (sentiment.trend === 'bullish' && btcChange > 1) {
+    summary += '🚀 Bitcoin surges, strong bullish sentiment.';
+  } else if (sentiment.trend === 'bearish' && btcChange < -1) {
+    summary += '⚠️ Market correction risk rising, watch key support levels.';
+  } else if (Math.abs(btcChange) < 0.5) {
+    summary += '📊 Market consolidating, direction choice imminent.';
+  } else {
+    summary += '📈 Mild rebound, caution prevails.';
+  }
+
+  if (btcPrice > 75000) {
+    summary += `\n• Bitcoin holds above ${(btcPrice / 1000).toFixed(1)}k, ${btcChange > 0 ? 'strong' : 'under pressure'};`;
+  }
+
+  if (ethPrice > 0 && btcPrice > 0) {
+    const ratio = ethPrice / btcPrice * 10000;
+    summary += `\n• ETH/BTC ratio ${ratio.toFixed(2)}, ${ratio > 30 ? 'ETH outperformance' : 'BTC dominance'};`;
+  }
+
+  if (defiTvl.totalTvl > 0) {
+    const tvlB = defiTvl.totalTvl / 1e9;
+    summary += `\n• DeFi TVL $${tvlB.toFixed(0)}B, ${defiTvl.change24h > 0 ? 'inflows continuing' : 'slight outflows'};`;
+  }
+
+  if (topGainers.length > 0 && topGainers[0].priceChange24h > 5) {
+    summary += `\n• Top gainer: ${topGainers[0].symbol} +${topGainers[0].priceChange24h.toFixed(1)}%;`;
+  }
+
+  if (btcDominance > 60) {
+    summary += `\n• BTC dominance strengthening (${btcDominance.toFixed(1)}%), capital concentrated;`;
+  } else if (btcDominance < 50) {
+    summary += `\n• Market rotating, alt season in progress;`;
+  }
+
+  if (btcOnchain.hashRate > 0) {
+    summary += `\n• Hash rate ${btcOnchain.hashRate.toFixed(0)} EH/s, miner confidence high;`;
+  }
+
+  return summary;
 }
 
 // Ensure directories exist
@@ -195,16 +357,16 @@ function generateEnglishReport(data, date) {
   if (sentiment.trend) {
     const trendEmoji = {
       bullish: '📈',
-      bearish: '📉',
-      slightly_bullish: '📊',
-      slightly_bearish: '📊',
-      sideways: '➡️'
+      cautiously_bullish: '📊',
+      sideways: '➡️',
+      cautiously_bearish: '📊',
+      bearish: '📉'
     };
     report += `**Market Trend:** ${trendEmoji[sentiment.trend] || '➡️'} ${sentiment.trend.replace('_', ' ').toUpperCase()}\n`;
   }
 
-  if (sentiment.outlook) {
-    report += `**Outlook:** ${sentiment.outlook}\n`;
+  if (sentiment.outlookEn) {
+    report += `**Outlook:** ${sentiment.outlookEn}\n`;
   }
 
   if (sentiment.keyFactors && sentiment.keyFactors.length > 0) {
@@ -215,6 +377,12 @@ function generateEnglishReport(data, date) {
   }
 
   report += `\n---\n\n`;
+
+  // AI Market Analysis
+  const aiSummary = generateAISummaryEnglish(data);
+  if (aiSummary) {
+    report += `## AI Market Analysis\n\n${aiSummary}\n\n---\n\n`;
+  }
 
   // Market Overview Section
   report += `## Market Overview\n\n`;
@@ -241,126 +409,58 @@ function generateEnglishReport(data, date) {
     report += `- **Current Price:** ${formatCurrency(data.bitcoin.price)}\n`;
     report += `- **24h High:** ${formatCurrency(data.bitcoin.high24h)}\n`;
     report += `- **24h Low:** ${formatCurrency(data.bitcoin.low24h)}\n`;
-    report += `- **24h Volume:** ${formatLargeNumber(data.bitcoin.volume24h)}\n\n`;
-  }
+    report += `- **24h Volume:** ${formatLargeNumber(data.bitcoin.volume24h)}\n`;
 
-  // News Section
-  if (news.length > 0) {
-    report += `## Latest News\n\n`;
-
-    news.slice(0, 5).forEach((article, index) => {
-      const date = new Date(article.publishedAt);
-      const dateStr = date.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-
-      report += `### ${index + 1}. ${article.title}\n\n`;
-      report += `**Source:** ${article.source} | **Published:** ${dateStr}\n\n`;
-      report += `${article.description}\n\n`;
-      report += `[Read more](${article.url})\n\n`;
-    });
-  } else {
-    report += `## Latest News\n\n`;
-    report += `*No news articles available*\n\n`;
-  }
-
-  // Disclaimer
-  report += `---\n\n`;
-  report += `*Disclaimer: This report is generated automatically and should not be considered financial advice. Always do your own research before making investment decisions.*\n`;
-
-  return report;
-}
-
-/**
- * Generate Chinese report
- */
-async function generateChineseReport(data, date) {
-  const cryptos = data.cryptocurrencies || [];
-  let news = data.news || [];
-  const sentiment = data.sentiment || {};
-  const fearGreed = data.fearGreed;
-
-  // Translate news to Chinese
-  if (news.length > 0) {
-    console.log('Translating news to Chinese...');
-    news = await translateNews(news);
-  }
-
-  let report = `# CryptoPulse 每日报告\n`;
-  report += `## ${date}\n\n`;
-
-  report += `**报告生成时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'UTC' })} UTC\n`;
-  report += `**数据来源：** ${data.sources?.join('、') || '多个'}\n\n`;
-
-  // Daily Summary Section
-  report += `## 每日市场总结\n\n`;
-
-  // Fear & Greed Index
-  if (fearGreed) {
-    const emoji = fearGreed.value <= 20 ? '😱' : fearGreed.value <= 40 ? '😰' : fearGreed.value <= 60 ? '😐' : fearGreed.value <= 80 ? '😊' : '🤑';
-    const classificationCN = {
-      'Extreme Fear': '极度恐慌',
-      'Fear': '恐慌',
-      'Neutral': '中性',
-      'Greed': '贪婪',
-      'Extreme Greed': '极度贪婪'
-    };
-    report += `**市场恐慌指数：** ${emoji} ${fearGreed.value}/100 (${classificationCN[fearGreed.classification] || fearGreed.classification})\n\n`;
-  }
-
-  // Market Sentiment
-  const trendMapCN = {
-    bullish: '上涨趋势',
-    bearish: '下跌趋势',
-    slightly_bullish: '小幅上涨',
-    slightly_bearish: '小幅下跌',
-    sideways: '横盘整理'
-  };
-
-  if (sentiment.trend) {
-    const trendEmoji = {
-      bullish: '📈',
-      bearish: '📉',
-      slightly_bullish: '📊',
-      slightly_bearish: '📊',
-      sideways: '➡️'
-    };
-    report += `**市场趋势：** ${trendEmoji[sentiment.trend] || '➡️'} ${trendMapCN[sentiment.trend] || sentiment.trend}\n`;
-  }
-
-  if (sentiment.outlook) {
-    report += `**市场展望：** ${sentiment.outlook}\n`;
-  }
-
-  if (sentiment.keyFactors && sentiment.keyFactors.length > 0) {
-    report += `\n**关键因素：**\n`;
-    sentiment.keyFactors.forEach(factor => {
-      report += `- ${factor}\n`;
-    });
-  }
-
-  report += `\n---\n\n`;
-
-  // Market Overview Section
-  report += `## 市场概览\n\n`;
-
-  if (cryptos.length > 0) {
-    report += `| 排名 | 代币 | 名称 | 价格 | 24小时涨跌 | 市值 |\n`;
-    report += `|------|------|------|------|------------|------|\n`;
-
-    cryptos.slice(0, 10).forEach((coin, index) => {
-      const changeClass = coin.priceChange24h >= 0 ? '🟢' : '🔴';
-      const changeSign = coin.priceChange24h >= 0 ? '+' : '';
-
-      report += `| ${index + 1} | ${coin.symbol} | ${coin.name} | ${formatCurrency(coin.price)} | ${changeClass} ${changeSign}${coin.priceChange24h?.toFixed(2)}% | ${formatLargeNumber(coin.marketCap)} |\n`;
-    });
+    if (data.bitcoin.priceYesterday) {
+      const diff = data.bitcoin.price - data.bitcoin.priceYesterday;
+      const pct = (diff / data.bitcoin.priceYesterday) * 100;
+      const sign = diff >= 0 ? '+' : '';
+      report += `- **vs Yesterday:** ${formatCurrency(data.bitcoin.priceYesterday)} → ${formatCurrency(data.bitcoin.price)} (${sign}${diff.toFixed(2)} / ${sign}${pct.toFixed(2)}%)\n`;
+    }
 
     report += `\n`;
-  } else {
-    report += `*暂无市场数据*\n\n`;
+  }
+
+  // Bitcoin On-Chain Metrics
+  if (data.bitcoinOnchain) {
+    const b = data.bitcoinOnchain;
+    const activeAddrStr = b.activeAddresses != null ? b.activeAddresses.toLocaleString() : 'N/A';
+    report += `## Bitcoin On-Chain Metrics\n\n`;
+    report += `- **Active Addresses:** ${activeAddrStr}\n`;
+    report += `- **Transactions:** ${b.transactionCount.toLocaleString()}\n`;
+    report += `- **Hash Rate:** ${b.hashRate != null ? b.hashRate.toFixed(2) + ' EH/s' : 'N/A'}\n`;
+    report += `- **Difficulty:** ${formatDifficulty(b.difficulty)}\n\n`;
+  }
+
+  // DeFi Market
+  if (data.defiTvl) {
+    const defi = data.defiTvl;
+    const totalTvlB = (typeof defi.totalTvl === 'number') ? (defi.totalTvl / 1e9) : 0;
+    const topProtocols = Array.isArray(defi.topProtocols) ? defi.topProtocols : [];
+    report += `## DeFi Market\n\n`;
+    report += `- **Total TVL:** $${totalTvlB.toFixed(2)} B\n`;
+    report += `- **24h Change:** ${defi.change24h >= 0 ? '+' : ''}${defi.change24h.toFixed(2)}%\n`;
+    if (topProtocols.length > 0) {
+      report += `- **Top Protocols:**\n`;
+      topProtocols.forEach(p => {
+        const pv = (p.tvl / 1e9) || 0;
+        const sign = (p.change24h ?? 0) >= 0 ? '+' : '';
+        report += `  - ${p.name}: $${pv.toFixed(2)} B (${sign}${(p.change24h ?? 0).toFixed(2)}%)\n`;
+      });
+    }
+report += `\n`;
+  }
+
+  // Global Market Section
+  if (data.globalMarket) {
+    const gm = data.globalMarket;
+    const totalMcapT = (gm.totalMarketCap >= 1e12) ? (gm.totalMarketCap / 1e12).toFixed(2) : (gm.totalMarketCap / 1e9).toFixed(2);
+    const mcapUnit = gm.totalMarketCap >= 1e12 ? 'T' : 'B';
+    report += `## Global Market\n\n`;
+    report += `- **Total Market Cap:** $${totalMcapT}${mcapUnit}\n`;
+    report += `- **24h Change:** ${gm.marketCapChange24h >= 0 ? '+' : ''}${gm.marketCapChange24h.toFixed(2)}%\n`;
+    report += `- **BTC Dominance:** ${gm.btcDominance.toFixed(2)}%\n`;
+    report += `- **ETH Dominance:** ${gm.ethDominance.toFixed(2)}%\n\n`;
   }
 
   // Bitcoin Section
@@ -369,7 +469,46 @@ async function generateChineseReport(data, date) {
     report += `- **当前价格：** ${formatCurrency(data.bitcoin.price)}\n`;
     report += `- **24小时最高：** ${formatCurrency(data.bitcoin.high24h)}\n`;
     report += `- **24小时最低：** ${formatCurrency(data.bitcoin.low24h)}\n`;
-    report += `- **24小时成交量：** ${formatLargeNumber(data.bitcoin.volume24h)}\n\n`;
+    report += `- **24小时成交量：** ${formatLargeNumber(data.bitcoin.volume24h)}\n`;
+
+    if (data.bitcoin.priceYesterday) {
+      const diff = data.bitcoin.price - data.bitcoin.priceYesterday;
+      const pct = (diff / data.bitcoin.priceYesterday) * 100;
+      const sign = diff >= 0 ? '+' : '';
+      report += `- **vs 昨日：** ${formatCurrency(data.bitcoin.priceYesterday)} → ${formatCurrency(data.bitcoin.price)} (${sign}${diff.toFixed(2)} / ${sign}${pct.toFixed(2)}%)\n`;
+    }
+
+    report += `\n`;
+  }
+
+  // DeFi Market
+  if (data.defiTvl) {
+    const defi = data.defiTvl;
+    const totalTvlB = (typeof defi.totalTvl === 'number') ? (defi.totalTvl / 1e9) : 0;
+    const topProtocols = Array.isArray(defi.topProtocols) ? defi.topProtocols : [];
+    report += `## DeFi 市场\n\n`;
+    report += `- **总锁仓量：** $${totalTvlB.toFixed(2)} B\n`;
+    report += `- **24小时变化：** ${defi.change24h >= 0 ? '+' : ''}${defi.change24h.toFixed(2)}%\n`;
+    if (topProtocols.length > 0) {
+      report += `- 头部协议：\n`;
+      topProtocols.forEach(p => {
+        const pv = (p.tvl / 1e9) || 0;
+        const sign = (p.change24h ?? 0) >= 0 ? '+' : '';
+        report += `  - ${p.name}: $${pv.toFixed(2)} B (${sign}${(p.change24h ?? 0).toFixed(2)}%)\n`;
+      });
+    }
+    report += `\n`;
+  }
+
+  // Bitcoin On-Chain Metrics
+  if (data.bitcoinOnchain) {
+    const b = data.bitcoinOnchain;
+    const activeAddrStr = b.activeAddresses != null ? b.activeAddresses.toLocaleString() : 'N/A';
+    report += `## 比特币链上指标\n\n`;
+    report += `- 活跃地址数：${activeAddrStr}\n`;
+    report += `- 交易笔数：${b.transactionCount.toLocaleString()}\n`;
+    report += `- 算力：${b.hashRate != null ? b.hashRate.toFixed(2) + ' EH/s' : 'N/A'}\n`;
+    report += `- 难度：${formatDifficulty(b.difficulty)}\n\n`;
   }
 
   // News Section
@@ -393,6 +532,191 @@ async function generateChineseReport(data, date) {
   } else {
     report += `## 最新资讯\n\n`;
     report += `*暂无新闻文章*\n\n`;
+  }
+
+  // Data freshness
+  if (data.timestamp) {
+    const ageMinutes = Math.round((Date.now() - new Date(data.timestamp).getTime()) / 60000);
+    report += `---\n\n`;
+    report += `**Data age:** ~${ageMinutes} minutes ago\n`;
+  }
+
+  // Disclaimer
+  report += `---\n\n`;
+  report += `*Disclaimer: This report is auto-generated and should not be considered investment advice. Always do your own research before investing.*\n`;
+
+  return report;
+}
+
+/**
+ * Generate Chinese report
+ */
+async function generateChineseReport(data, date) {
+  const cryptos = data.cryptocurrencies || [];
+  const news = data.news || [];
+  const sentiment = data.sentiment || {};
+  const fearGreed = data.fearGreed;
+
+  // Translate news to Chinese
+  const translatedNews = await translateNews(news);
+
+  let report = `# CryptoPulse 每日报告\n`;
+  report += `## ${date}\n\n`;
+
+  report += `**报告生成时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })} 北京时间\n`;
+  report += `**数据来源：** ${data.sources?.join('、') || '多个来源'}\n\n`;
+
+  // Fear & Greed Index
+  if (fearGreed) {
+    const emoji = fearGreed.value <= 20 ? '😱' : fearGreed.value <= 40 ? '😰' : fearGreed.value <= 60 ? '😐' : fearGreed.value <= 80 ? '😊' : '🤑';
+    report += `**恐惧与贪婪指数：** ${emoji} ${fearGreed.value}/100 (${fearGreed.classification})\n\n`;
+  }
+
+  // Market Sentiment
+  if (sentiment.trend) {
+    const trendEmoji = {
+      bullish: '📈',
+      cautiously_bullish: '📊',
+      sideways: '➡️',
+      cautiously_bearish: '📊',
+      bearish: '📉'
+    };
+    const trendMap = {
+      bullish: '看涨',
+      cautiously_bullish: '谨慎看涨',
+      sideways: '横盘',
+      cautiously_bearish: '谨慎看跌',
+      bearish: '看跌'
+    };
+    report += `**市场趋势：** ${trendEmoji[sentiment.trend] || '➡️'} ${trendMap[sentiment.trend] || sentiment.trend}\n`;
+  }
+
+  if (sentiment.outlook) {
+    report += `**市场展望：** ${sentiment.outlook}\n`;
+  }
+
+  if (sentiment.keyFactorsZh && sentiment.keyFactorsZh.length > 0) {
+    report += `\n**关键因素：**\n`;
+    for (const factor of sentiment.keyFactorsZh) {
+      report += `- ${factor}\n`;
+    }
+  }
+
+  report += `\n---\n\n`;
+
+  // AI Market Analysis
+  const aiSummary = generateAISummary(data);
+  if (aiSummary) {
+    report += `## AI 市场分析\n\n${aiSummary}\n\n---\n\n`;
+  }
+
+  // Market Overview
+  report += `## 市场概览\n\n`;
+
+  if (cryptos.length > 0) {
+    report += `| 排名 | 代币 | 名称 | 价格 | 24小时涨跌 | 市值 |\n`;
+    report += `|------|------|------|-------|------------|------|\n`;
+
+    cryptos.slice(0, 10).forEach((coin, index) => {
+      const changeClass = coin.priceChange24h >= 0 ? '🟢' : '🔴';
+      const changeSign = coin.priceChange24h >= 0 ? '+' : '';
+      const name = coin.nameCn || coin.name;
+      report += `| ${index + 1} | ${coin.symbol} | ${name} | ${formatCurrency(coin.price)} | ${changeClass} ${changeSign}${coin.priceChange24h?.toFixed(2)}% | ${formatLargeNumber(coin.marketCap)} |\n`;
+    });
+
+    report += `\n`;
+  } else {
+    report += `*暂无市场数据*\n\n`;
+  }
+
+  // Bitcoin Section
+  if (data.bitcoin) {
+    report += `## 比特币 (BTC) 重点\n\n`;
+    report += `- **当前价格：** ${formatCurrency(data.bitcoin.price)}\n`;
+    report += `- **24小时最高：** ${formatCurrency(data.bitcoin.high24h)}\n`;
+    report += `- **24小时最低：** ${formatCurrency(data.bitcoin.low24h)}\n`;
+    report += `- **24小时成交量：** ${formatLargeNumber(data.bitcoin.volume24h)}\n`;
+
+    if (data.bitcoin.priceYesterday) {
+      const diff = data.bitcoin.price - data.bitcoin.priceYesterday;
+      const pct = (diff / data.bitcoin.priceYesterday) * 100;
+      const sign = diff >= 0 ? '+' : '';
+      report += `- **vs 昨日：** ${formatCurrency(data.bitcoin.priceYesterday)} → ${formatCurrency(data.bitcoin.price)} (${sign}${diff.toFixed(2)} / ${sign}${pct.toFixed(2)}%)\n`;
+    }
+
+    report += `\n`;
+  }
+
+  // Bitcoin On-Chain Metrics
+  if (data.bitcoinOnchain) {
+    const b = data.bitcoinOnchain;
+    const activeAddrStr = b.activeAddresses != null ? b.activeAddresses.toLocaleString() : 'N/A';
+    report += `## 比特币链上指标\n\n`;
+    report += `- **活跃地址数：** ${activeAddrStr}\n`;
+    report += `- **交易笔数：** ${b.transactionCount.toLocaleString()}\n`;
+    report += `- **算力：** ${b.hashRate != null ? b.hashRate.toFixed(2) + ' EH/s' : 'N/A'}\n`;
+    report += `- **难度：** ${formatDifficulty(b.difficulty)}\n\n`;
+  }
+
+  // DeFi Market
+  if (data.defiTvl) {
+    const defi = data.defiTvl;
+    const totalTvlB = (typeof defi.totalTvl === 'number') ? (defi.totalTvl / 1e9) : 0;
+    const topProtocols = Array.isArray(defi.topProtocols) ? defi.topProtocols : [];
+    report += `## DeFi 市场\n\n`;
+    report += `- **总锁仓量：** $${totalTvlB.toFixed(2)} B\n`;
+    report += `- **24小时变化：** ${defi.change24h >= 0 ? '+' : ''}${defi.change24h.toFixed(2)}%\n`;
+    if (topProtocols.length > 0) {
+      report += `- **头部协议：**\n`;
+      topProtocols.forEach(p => {
+        const pv = (p.tvl / 1e9) || 0;
+        const sign = (p.change24h ?? 0) >= 0 ? '+' : '';
+        report += `  - ${p.name}: $${pv.toFixed(2)} B (${sign}${(p.change24h ?? 0).toFixed(2)}%)\n`;
+      });
+    }
+    report += `\n`;
+  }
+
+  // Global Market
+  if (data.globalMarket) {
+    const gm = data.globalMarket;
+    const totalMcapT = (gm.totalMarketCap >= 1e12) ? (gm.totalMarketCap / 1e12).toFixed(2) : (gm.totalMarketCap / 1e9).toFixed(2);
+    const mcapUnit = gm.totalMarketCap >= 1e12 ? 'T' : 'B';
+    report += `## 全球市场\n\n`;
+    report += `- **总市值：** $${totalMcapT}${mcapUnit}\n`;
+    report += `- **24小时变化：** ${gm.marketCapChange24h >= 0 ? '+' : ''}${gm.marketCapChange24h.toFixed(2)}%\n`;
+    report += `- **BTC 占比：** ${gm.btcDominance.toFixed(2)}%\n`;
+    report += `- **ETH 占比：** ${gm.ethDominance.toFixed(2)}%\n\n`;
+  }
+
+  // News Section
+  if (translatedNews.length > 0) {
+    report += `## 最新资讯\n\n`;
+
+    translatedNews.slice(0, 5).forEach((article, index) => {
+      const date = new Date(article.publishedAt);
+      const dateStr = date.toLocaleDateString('zh-CN', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      report += `### ${index + 1}. ${article.title}\n\n`;
+      report += `**来源：** ${article.source} | **发布时间：** ${dateStr}\n\n`;
+      report += `${article.description}\n\n`;
+      report += `[阅读更多](${article.url})\n\n`;
+    });
+  } else {
+    report += `## 最新资讯\n\n`;
+    report += `*暂无新闻文章*\n\n`;
+  }
+
+  // Data freshness
+  if (data.timestamp) {
+    const ageMinutes = Math.round((Date.now() - new Date(data.timestamp).getTime()) / 60000);
+    report += `---\n\n`;
+    report += `**数据时效：** 约 ${ageMinutes} 分钟前更新\n`;
   }
 
   // Disclaimer
